@@ -20,6 +20,30 @@ function tokenLooksValid(token) {
 
 const PORT_NUM = Number.parseInt(PORT, 10) || 3000;
 
+// Minimal HTTP server for platform health checks (e.g. Koyeb): it just needs
+// to listen on the exposed port and answer GET / with 2xx. In offline mode it
+// additionally serves the /interactions dispatch endpoint. The Discord
+// gateway websocket connection never touches this server.
+function startHealthServer(mode, onPostInteractions = null) {
+  const server = http.createServer((req, res) => {
+    const url = (req.url || '/').split('?')[0];
+    if (req.method === 'GET' && (url === '/' || url === '/health')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok', mode, uptimeSeconds: Math.round(process.uptime()) }));
+      return;
+    }
+    if (req.method === 'POST' && url === '/interactions' && onPostInteractions) {
+      onPostInteractions(req, res);
+      return;
+    }
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Not found' }));
+  });
+  server.listen(PORT_NUM, () => {
+    console.log(`Botty is ready (${mode} mode) — health endpoint listening on port ${PORT_NUM}`);
+  });
+}
+
 if (tokenLooksValid(DISCORD_TOKEN)) {
   const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
@@ -57,17 +81,14 @@ if (tokenLooksValid(DISCORD_TOKEN)) {
       console.error(`Login failed: ${err.message}. Check DISCORD_TOKEN in .env.`);
       process.exit(1);
     });
+
+  startHealthServer('online');
 } else {
   console.log(
     'No valid DISCORD_TOKEN found — starting Botty in offline mode ' +
       '(command dispatch only, no Discord gateway connection).',
   );
-  const server = http.createServer((req, res) => {
-    if (req.method !== 'POST' || req.url !== '/interactions') {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'POST /interactions { command, args: [] }' }));
-      return;
-    }
+  startHealthServer('offline', (req, res) => {
     let body = '';
     req.on('data', (chunk) => {
       body += chunk;
@@ -91,9 +112,6 @@ if (tokenLooksValid(DISCORD_TOKEN)) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ reply }));
     });
-  });
-  server.listen(PORT_NUM, () => {
-    console.log(`Botty is ready (offline mode) — listening on port ${PORT_NUM}`);
   });
 }
 
